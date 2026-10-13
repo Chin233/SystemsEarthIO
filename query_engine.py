@@ -1,114 +1,76 @@
 import duckdb
+import pandas as pd
+import geopandas as gpd
 import time
 import os
 
-PARQUET_FILE = "mock_plots.parquet"
+CSV_FILE = "./source/200001-17plots-valid_2025-08-02T09_11_12Z.csv"
+GEO_FILE = "./source/200001-17plots-valid.geojson"
+PARQUET_FILE = "optimized_plots.parquet"
 
 def get_duckdb_connection():
-    """Initializes DuckDB and loads spatial extensions."""
     con = duckdb.connect(database=":memory:")
     try:
         con.execute("INSTALL spatial; LOAD spatial;")
-    except Exception:
-        # Falls back cleanly if internet access for extension download is unavailable
+    except:
         pass
     return con
 
 def get_all_plot_ids():
-    """Fetches list of available Plot IDs for UI dropdowns."""
     con = get_duckdb_connection()
-    df = con.execute(f"SELECT plot_id FROM '{PARQUET_FILE}' ORDER BY plot_id").fetchdf()
-    return df["plot_id"].tolist()
+    df = con.execute(f"SELECT a3_plot_id FROM '{PARQUET_FILE}' ORDER BY a3_plot_id").fetchdf()
+    return df["a3_plot_id"].tolist()
 
 def evaluate_eudr_compliance(record):
-    """
-    Evaluates regulatory compliance based on EUDR cut-off and risk rules:
-    - Must not have deforestation alerts post-cutoff date.
-    - Must not overlap with protected/restricted areas.
-    """
-    has_alerts = record["deforestation_alerts"] > 0
-    in_protected = bool(record["protected_area_overlap"])
-    
-    if has_alerts or in_protected:
-        status = "Non-Compliant (Alert)"
-    else:
-        status = "Compliant"
-        
+    # Dynamically reads the real compliance statuses from the CSV
     return {
-        "status": status,
-        "forest_baseline_2020": "Forest Present" if record["forest_baseline_2020"] else "Non-Forest",
-        "deforestation_alerts": int(record["deforestation_alerts"]),
-        "protected_overlap": "Yes (Restricted)" if in_protected else "No Overlap",
+        "status": record["i1_eudr_status"],
+        "deforestation": record["c5_deforestation_final_status"],
+        "protected_overlap": record["d1_strict_protected_area_spatial_analysis_result"],
+        "plot_size_ha": record["a7_size_of_plot_ha"]
     }
 
 def run_raw_baseline_query(plot_id: str):
-    """
-    Simulates querying uncompressed, multi-layer raw raster/vector stacks.
-    Injects an artificial latency delay to reflect baseline unindexed access.
-    """
     start_time = time.perf_counter()
-    time.sleep(1.8)  # Simulates loading and raster intersection overhead
     
-    con = get_duckdb_connection()
-    query = f"""
-        SELECT plot_id, forest_baseline_2020, deforestation_alerts, protected_area_overlap, geometry
-        FROM '{PARQUET_FILE}'
-        WHERE plot_id = '{plot_id}'
-    """
-    result = con.execute(query).fetchdf().iloc[0]
+    # The "Slow" Way: Dynamically loading and joining the fragmented raw files
+    df = pd.read_csv(CSV_FILE)
+    gdf = gpd.read_file(GEO_FILE)
+    merged = gdf.merge(df, left_on="ProductionPlace", right_on="a3_plot_id")
+    
+    # Find the specific plot
+    result = merged[merged["a3_plot_id"] == plot_id].iloc[0]
     elapsed_ms = (time.perf_counter() - start_time) * 1000
 
-    compliance = evaluate_eudr_compliance(result)
+    # Dynamically measure the raw storage footprint
+    raw_bytes = os.path.getsize(CSV_FILE) + os.path.getsize(GEO_FILE)
+    raw_kb = round(raw_bytes / 1024, 2)
     
     return {
-        "plot_id": result["plot_id"],
-        "compliance": compliance,
+        "plot_id": result["a3_plot_id"],
+        "compliance": evaluate_eudr_compliance(result),
         "geometry": result["geometry"],
         "query_time_ms": round(elapsed_ms, 2),
-        "storage_size_display": "14.2 GB (Raw Multi-Layer Tiffs)",
+        "storage_size_display": f"{raw_kb} KB (Raw CSV + GeoJSON)",
     }
 
 def run_optimized_query(plot_id: str):
-    """
-    Queries the compact, column-indexed Parquet representation via DuckDB.
-    Measures genuine in-memory retrieval latency.
-    """
     start_time = time.perf_counter()
-    con = get_duckdb_connection()
     
-    query = f"""
-        SELECT plot_id, forest_baseline_2020, deforestation_alerts, protected_area_overlap, geometry
-        FROM '{PARQUET_FILE}'
-        WHERE plot_id = '{plot_id}'
-    """
+    # The "Fast" Way: Querying the streamlined Parquet file with DuckDB
+    con = get_duckdb_connection()
+    query = f"SELECT * FROM '{PARQUET_FILE}' WHERE a3_plot_id = '{plot_id}'"
     result = con.execute(query).fetchdf().iloc[0]
     elapsed_ms = (time.perf_counter() - start_time) * 1000
 
-    actual_file_kb = round(os.path.getsize(PARQUET_FILE) / 1024, 2)
-    compliance = evaluate_eudr_compliance(result)
+    # Dynamically measure the optimized storage footprint
+    opt_bytes = os.path.getsize(PARQUET_FILE)
+    opt_kb = round(opt_bytes / 1024, 2)
 
     return {
-        "plot_id": result["plot_id"],
-        "compliance": compliance,
+        "plot_id": result["a3_plot_id"],
+        "compliance": evaluate_eudr_compliance(result),
         "geometry": result["geometry"],
         "query_time_ms": round(elapsed_ms, 2),
-        "storage_size_display": f"{actual_file_kb} KB (Optimized Structure)",
+        "storage_size_display": f"{opt_kb} KB (Optimized Parquet)",
     }
-
-if __name__ == "__main__":
-    test_id = "P-0001"
-    print(f"Testing baseline and optimized queries for {test_id}...")
-    
-    raw = run_raw_baseline_query(test_id)
-    opt = run_optimized_query(test_id)
-    
-    print("\n--- Raw Baseline ---")
-    print(f"Time: {raw['query_time_ms']} ms | Size: {raw['storage_size_display']}")
-    print(f"Status: {raw['compliance']['status']}")
-
-    print("\n--- Optimized Engine ---")
-    print(f"Time: {opt['query_time_ms']} ms | Size: {opt['storage_size_display']}")
-    print(f"Status: {opt['compliance']['status']}")
-
-    fidelity_match = raw["compliance"] == opt["compliance"]
-    print(f"\nDecision Fidelity Match: {fidelity_match} (100% Match)")
