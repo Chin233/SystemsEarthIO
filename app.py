@@ -154,3 +154,116 @@ with bench_col:
             st.success("✅ **100% Decision Fidelity Verified:** Bitmask-decoded outputs are identical to the multi-file baseline.")
         else:
             st.error("❌ **Fidelity Mismatch Detected!**")
+
+
+# ==========================================================
+# Independent Hansen Environmental Analysis
+# Added from systemearth-geospatial
+# ==========================================================
+
+import json
+from pathlib import Path
+
+@st.cache_data
+def load_hansen_results():
+    path = Path(__file__).resolve().parent / "dashboard_integrated.geojson"
+
+    with open(path, "r", encoding="utf-8") as f:
+        geojson = json.load(f)
+
+    return {
+        feature["properties"]["plot_id"]: feature["properties"]
+        for feature in geojson["features"]
+    }
+
+hansen_results = load_hansen_results()
+
+st.divider()
+st.header("🌳 Independent Hansen Environmental Analysis")
+st.caption(
+    "Satellite-derived tree-cover-loss observations compared with "
+    "supplier-submitted due diligence declarations."
+)
+
+if selected_plot in hansen_results:
+    record = hansen_results[selected_plot]
+
+    st.subheader(f"Farm Plot: {selected_plot}")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric(
+            "Supplier Deforestation Indication",
+            "Yes" if record["supplier_loss_indication"] else "No"
+        )
+
+    with col2:
+        st.metric(
+            "Hansen Loss Detected (2021–2023)",
+            "Yes" if record["independent_hansen_loss"] else "No"
+        )
+
+    with col3:
+        st.metric(
+            "Detected Loss Pixels (2021–2023)",
+            record["loss_pixels_2021_2023"]
+        )
+
+    st.markdown("### Comparison")
+
+    comparison = record["analysis_comparison"]
+
+    if comparison == "Same binary flag":
+        st.success("Supplier and Hansen binary indicators match.")
+    else:
+        st.warning(
+            "Different binary indicators — further investigation needed."
+        )
+
+    st.markdown("### Additional Environmental Observations")
+
+    st.write(
+        "**Canopy threshold fraction (year 2000):**",
+        record["treecover_threshold_fraction"]
+    )
+
+    st.write(
+        "**Tree-cover loss detected (2021–2025):**",
+        record["loss_after_2020"]
+    )
+
+    st.write(
+        "**Earliest post-2020 loss year:**",
+        record["first_loss_year_after_2020"]
+    )
+
+    st.write(
+        "**Water pixel fraction:**",
+        record["water_pixel_fraction"]
+    )
+
+    with st.expander("Supplier declaration and mitigation details"):
+        st.write(
+            "**Supplier spatial analysis:**",
+            record["supplier_deforestation_result"]
+        )
+        st.write(
+            "**Mitigation:**",
+            record["supplier_mitigation"]
+        )
+        st.write(
+            "**Declared final deforestation status:**",
+            record["supplier_final_deforestation_status"]
+        )
+
+    st.info(
+        "These are environmental observations, not EUDR compliance "
+        "determinations. Tree-cover loss does not necessarily mean "
+        "deforestation. Different data versions, methods or thresholds "
+        "may explain differences between the two indicators. "
+        "The canopy-cover threshold is illustrative and uses year-2000 data."
+    )
+
+else:
+    st.error(f"No Hansen analysis found for {selected_plot}.")
