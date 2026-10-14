@@ -55,18 +55,25 @@ with col1:
 
 with col2:
     st.header("Optimized Architecture")
-    # Calculate latency improvement
-    latency_diff = round(raw_results['query_time_ms'] - opt_results['query_time_ms'], 2)
+    
+    # Calculate latency difference cleanly
+    latency_diff = round(opt_results['query_time_ms'] - raw_results['query_time_ms'], 2)
+    latency_label = f"{latency_diff} ms (Faster)" if latency_diff < 0 else f"+{latency_diff} ms (Slower)"
+    
+    # Calculate exact storage percentage reduction
+    storage_saved_kb = round(raw_results['storage_kb'] - opt_results['storage_kb'], 2)
+    storage_saved_pct = round((storage_saved_kb / raw_results['storage_kb']) * 100, 1)
+    
     st.metric(
         "Query Latency", 
         f"{opt_results['query_time_ms']} ms", 
-        delta=f"-{latency_diff} ms (Faster)", 
+        delta=latency_label, 
         delta_color="inverse"
     )
     st.metric(
         "Storage Required", 
         opt_results['storage_size_display'], 
-        delta="Massive Reduction", 
+        delta=f"-{storage_saved_pct}% (-{storage_saved_kb} KB)", 
         delta_color="inverse"
     )
     st.write("**Compliance Decision:**")
