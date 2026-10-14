@@ -1,8 +1,10 @@
 import streamlit as st
 import pandas as pd
 import pydeck as pdk
-from shapely import wkb
 import query_engine
+import json
+from shapely import wkb
+from pathlib import Path
 
 # 1. Page Configuration & Custom Styling
 st.set_page_config(page_title="SystemEarth | Geospatial Optimization", page_icon="🌍", layout="wide")
@@ -160,9 +162,6 @@ with bench_col:
 # Independent Hansen Environmental Analysis
 # Added from systemearth-geospatial
 # ==========================================================
-
-import json
-from pathlib import Path
 
 @st.cache_data
 def load_hansen_results():
