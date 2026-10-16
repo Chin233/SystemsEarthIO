@@ -1,5 +1,72 @@
-# SystemsEarthIO: Geospatial Data Optimisation & Encoding Engine
-For Hack&amp;Hire SystemsEarth. A compact, query-efficient geospatial encoding architecture designed to reproduce plot-level EUDR compliance decisions
+# SystemsEarthIO: Geospatial Optimisation & Environmental Screening
+
+For Hack & Hire SystemEarth. A decision-specific geospatial processing architecture designed to reduce environmental raster storage, accelerate plot-level queries, and provide independent satellite-derived evidence for supplier due diligence verification.
+
+Google Slide: [Link](https://docs.google.com/presentation/d/1Up0p4dgxFiEKyoSYRHse_NvAEED1zXUd/edit?slide=id.p2#slide=id.p2)
+
+## Architecture
+
+The Streamlit dashboard brings together two complementary pipelines:
+
+1. **Supplier records:** CSV + farm GeoJSON → `process_data.py` → `optimized_plots.parquet` → DuckDB queries in `query_engine.py`.
+2. **Environmental observations:** Hansen rasters + farm polygons → separate offline analysis → `dashboard_integrated.geojson` → the dashboard's Hansen section.
+
+Selecting a plot runs the supplier baseline and optimised queries, then displays precomputed Hansen results for the same plot ID. Streamlit does not run the raster analysis live. The existing map colours and benchmark cards use the supplier pipeline.
+
+## Supplier-record optimisation
+
+`process_data.py` joins `GeoJSON.ProductionPlace` to `CSV.a3_plot_id`, retaining six of the CSV's 35 attributes for the selected outputs: plot ID, area and four status fields. The other 29 attributes are excluded from this compact representation, not declared unnecessary for all due diligence.
+
+The four statuses are packed into one `uint8` column:
+
+| Bit value | Source field | Meaning when set |
+|---|---|---|
+| `1` | `i1_eudr_status` | Supplier declares compliant |
+| `2` | `c5_deforestation_final_status` | Supplier declares deforestation-free |
+| `4` | `d1_strict_protected_area_spatial_analysis_result` | Supplier reports no strict protected-area overlap |
+| `8` | `c2_deforestation_spatial_analysis_result` | Supplier reports a spatial deforestation indication |
+
+For this sample, `7` represents the first three flags; `15` additionally includes a spatial alert. Bitwise AND operations reconstruct the selected statuses.
+
+The output contains four columns: `a3_plot_id`, `a7_size_of_plot_ha`, `compliance_bitmask` and `geometry`. Areas use `float32`; geometry uses WKB in GeoParquet. Zstandard compression and `index=False` reduce storage. A persistent DuckDB connection queries the Parquet file without repeating the CSV/GeoJSON join.
+
+This preserves the selected categorical outputs and the sample's areas rounded to two decimals, rather than every original field or full numeric precision.
+
+## Hansen analysis and raster optimisation
+
+The separate raster workflow uses `treecover2000`, `lossyear` and `datamask`. It samples farm polygons to calculate six outputs: sampled pixels, land pixels, canopy-threshold fraction, post-2020 loss flag, earliest post-2020 loss year and water fraction.
+
+The selected optimisation replaces exact canopy percentages with:
+
+```python
+binary_cover = (cover >= 10).astype(np.uint8)
+```
+
+The binary canopy raster preserves the fixed ≥10% query but cannot recover original percentages or support arbitrary new thresholds. It uses a byte per pixel before file compression. Loss-year and land/water rasters remain unchanged. An earlier three-layer `uint16` packing experiment increased compressed storage by 24.57% and was rejected.
+
+Supplier comparison uses **2021–2023** loss; additional environmental observations use **2021–2025**. These time windows must remain distinct.
+
+`dashboard_integrated.geojson` stores the resulting observations and supplier details as **plain GeoJSON**. It has no compliance bitmask and is not processed by the existing Parquet optimiser. Its precomputed results are cached by Streamlit. Compressing this additional dashboard dataset would require extending the ingestion and query code while retaining both sources' meanings.
+
+## Validation and benchmark scope
+
+Checks against the supplied files confirmed:
+
+- All 17 plot IDs, geometries, areas and copied supplier details agree across the source and integrated files.
+- The actual pandas bitmask expression and decoding functions reproduce all five supplier outputs for all 17 plots: twelve masks are `7`, five are `15`.
+- All Hansen properties required by the dashboard exist; stored flags, counts, fractions, years and comparison labels are internally consistent.
+- **9 plots have matching indicators; 8 differ:** 3 have Hansen loss without a supplier indication, and 5 have a supplier indication without Hansen loss in 2021–2023. These are review candidates, not confirmed compliance violations.
+
+Earlier project measurements are retained below as **reported benchmarks, not rerun measurements**:
+
+| Pipeline | Reported storage result | Reported query result |
+|---|---|---|
+| Supplier CSV + GeoJSON → GeoParquet | >32% reduction on the sample | 10–30× faster retrieval |
+| Three original → optimised rasters | 1,031,083 → 422,941 bytes; 58.98% reduction | Median 60.84 → 47.11 ms; 1.29× faster |
+
+The canopy layer alone reportedly shrank by 86.08%. Raster testing reportedly matched all six outputs across 17 plots. The raster files and processing scripts are absent from this supplied snapshot, so those claims cannot be reproduced from the integrated GeoJSON. Parquet compression and DuckDB timings were also not rerun in this review.
+
+The integrated GeoJSON is 16,817 bytes of additional dashboard data. Supplier benchmark cards exclude it and the rasters; neither pipeline's percentage describes total application storage. Small, warm-cache benchmarks do not establish production-scale performance.
 
 ## Setup Instructions
 1. Clone the repository and navigate into the folder.
@@ -10,63 +77,15 @@ For Hack&amp;Hire SystemsEarth. A compact, query-efficient geospatial encoding a
 4. Install dependencies: `pip install -r requirements.txt`
 5. Preprocess the data
    - Generate mock data: `python generate_mock_data.py`
-   - Preprocess sample data: `python process_data.py`
+   - Preprocess sample data: `python process_data.py`. Ensure csv and geojson file are in `source/`.
+
+   Preprocessing creates `optimized_plots.parquet`. Recomputing Hansen observations additionally requires the separate raster scripts, source rasters and their dependencies.
+
 6. Run the app: `streamlit run app.py`
 
 
-## 🎯 Problem Statement
+## Limitations
 
-Sustainability and EUDR due diligence platforms must overlay multi-year, multi-layer geospatial datasets such as natural forest baselines (31 December 2020 cut-off), Hansen tree cover loss alerts, and protected area boundaries—against farm plot polygons. 
+The year-2000 canopy layer and illustrative threshold are not a validated 2020 forest baseline. Tree-cover loss alone is not a deforestation determination. The independent module does not analyse protected-area boundaries. Preserve source data for audit and broader queries.
 
-In the baseline workflow, evaluating a single farm plot requires parsing and joining fragmented files at runtime:
-1. **Plot Geometries (`.geojson`):** Polygon boundaries for overlap analysis.
-2. **Due Diligence Reports (`.csv`):** A wide, 35-column tabular file filled with repetitive text strings and administrative metadata.
-
-Compliance decisions rarely require the entire raw dataset. They only require specific segments of decision-critical information delivered rapidly and with **100% decision fidelity**.
-
-## ⚡ Core Optimisation Techniques
-
-Our architecture (`process_data.py` + `query_engine.py`) compresses the multi-file baseline into a unified, bitmask-encoded columnar store through four primary optimisations:
-
-### 1. Regulatory Layer Analysis & Schema Pruning
-Guided by EUDR compliance rules, we audited all 35 columns of the raw due diligence dataset and pruned **29 non-essential administrative columns** (e.g., factory IDs, lot numbers, harvest dates, dry weight quotas, and verbose mitigation links). We retained only the 6 core attributes required to verify plot-level compliance:
-* **Plot Identifier:** `a3_plot_id` (joined against GeoJSON `ProductionPlace`)
-* **Plot Area (ha):** `a7_size_of_plot_ha`
-* **Spatial Deforestation Alert (Hansen 2021–2023):** `c2_deforestation_spatial_analysis_result`
-* **Final Deforestation Status:** `c5_deforestation_final_status`
-* **Strict Protected Area Overlap:** `d1_strict_protected_area_spatial_analysis_result`
-* **Overall EUDR Compliance Status:** `i1_eudr_status`
-
-### 2. 1-Byte Bitmask Encoding (`uint8`)
-Instead of storing repetitive string literals (such as `"a. No overlap with strict PA"` or `"b. Indication of deforestation"`) across thousands of rows, we pack the 4 binary compliance layers into a single **8-bit unsigned integer (`uint8`)** column named `compliance_bitmask`:
-
-| Bit Position | Binary Value | Layer / Attribute | `1` (True) | `0` (False) |
-| :--- | :---: | :--- | :--- | :--- |
-| **Bit 0** | `1` (`2^0`) | `i1_eudr_status` | Compliant (`a.`) | Non-Compliant (`b.`) |
-| **Bit 1** | `2` (`2^1`) | `c5_deforestation_final_status` | Deforestation-Free (`a.`) | Flagged (`b.`) |
-| **Bit 2** | `4` (`2^2`) | `d1_strict_protected_area...` | No Strict PA Overlap (`a.`) | Overlap Detected (`b.`) |
-| **Bit 3** | `8` (`2^3`) | `c2_deforestation_spatial...` | Spatial Alert Detected (`b.`) | No Indication (`a.`) |
-
-* **Example:** A compliant plot with no deforestation alerts and no protected area overlap encodes all four layers into the integer **`7`** (`1 + 2 + 4 + 0`). A plot that triggered a Hansen spatial alert but passed final compliance after on-site mitigation encodes as **`15`** (`1 + 2 + 4 + 8`).
-* **Zero-Cost Decoding:** At query time, bitwise `AND` operations (`bitmask & 1`, `bitmask & 8`, etc.) reconstruct the exact compliance outputs in nanoseconds.
-
-### 3. Pre-Joined GeoParquet & Zstandard (`zstd`) Compression
-* **Eliminating Runtime Joins:** The GeoJSON polygon layer and pruned CSV attributes are pre-merged during ingestion into a single **4-column dataset** (`a3_plot_id`, `a7_size_of_plot_ha`, `compliance_bitmask`, `geometry`).
-* **Data Type Downcasting:** Plot area (`a7_size_of_plot_ha`) is downcast from 64-bit float (`float64`) to 32-bit float (`float32`), cutting numeric column memory in half while preserving hectare precision.
-* **WKB Geometry & Zstandard Compression:** Polygon coordinates are serialized into compact Well-Known Binary (WKB) and written to disk using `compression="zstd"` with `index=False` to strip Pandas index bloat.
-
-### 4. Persistent In-Memory OLAP Execution (DuckDB)
-* **Zero-Boot Query Path:** Rather than instantiating a database connection or loading C++ spatial extensions on every query (which adds ~90 ms of overhead), `query_engine.py` maintains a persistent in-memory DuckDB instance (`CON = duckdb.connect(database=":memory:")`).
-* **Predicate Pushdown:** DuckDB queries `optimized_plots.parquet` directly using vectorized SQL filtering (`WHERE a3_plot_id = ? LIMIT 1`), reading only the required byte ranges.
-
----
-
-## 📊 Evaluation & Benchmark Summary
-
-| Evaluation Pillar | Raw Baseline (`CSV` + `GeoJSON`) | Optimized Architecture (`Bitmask GeoParquet` + `DuckDB`) | Impact |
-| :--- | :--- | :--- | :--- |
-| **Storage Footprint** | Disjointed files (`18.81 KB` for 17 sample plots; 35 CSV columns + raw text GeoJSON) | Single `zstd` GeoParquet file (4 columns, 1-byte bitmask, WKB geometry) | **>32% reduction** on tiny samples; scales to **80%+ reduction** on multi-megabyte shipments |
-| **Query Performance** | `~14 ms – 55 ms` (requires full file parsing & runtime DataFrame merge) | `~1 ms – 4 ms` (persistent DuckDB direct columnar lookup + bitwise decode) | **10x – 30x faster** single-plot retrieval |
-| **Result Fidelity** | Baseline reference outputs | Bitwise-decoded outputs verified against raw layers across all 17 plots (80.5 ha) | **100% Decision Fidelity** across all compliance checks |
-
----
+Two dashboard presentation issues remain: the sidebar says 30 excluded CSV columns instead of 29, and individual fidelity cells are hardcoded as “Match” although the overall comparison is calculated.

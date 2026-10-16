@@ -1,6 +1,9 @@
-# Independent Hansen Environmental Analysis & Raster Optimisation Engine
+# SystemsEarthIO: Geospatial Data Optimisation & Encoding Engine
 
 For Hack & Hire SystemEarth. A decision-specific geospatial processing architecture designed to reduce environmental raster storage, accelerate plot-level queries, and provide independent satellite-derived evidence for supplier due diligence verification.
+
+Google Slide: [Link](https://docs.google.com/presentation/d/1Up0p4dgxFiEKyoSYRHse_NvAEED1zXUd/edit?slide=id.p2#slide=id.p2)
+
 
 ## 🎯 Problem Statement
 
